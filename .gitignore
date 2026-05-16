@@ -1,0 +1,8 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+models/nllb-600M-onnx-int8/*.onnx
+models/nllb-600M-onnx-int8/sentencepiece.bpe.model
+audio_samples/*.wav

@@ -1,0 +1,29 @@
+# PyTorch — install separately with CUDA index:
+# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+torch
+torchaudio
+
+# Audio
+numpy
+soundfile
+scipy
+sounddevice
+resampy
+noisereduce
+
+# VAD
+silero-vad
+
+# STT
+faster-whisper
+
+# NMT
+optimum[onnxruntime]
+transformers
+sentencepiece
+onnxruntime-gpu
+
+# Web server
+fastapi
+uvicorn[standard]
+websockets

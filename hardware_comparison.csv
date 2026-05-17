@@ -1,0 +1,11 @@
+nom,categorie,soc_cpu,gpu_npu,ram_max_gb,affichage,refroidissement_actif,tactile_hdmi_usb,prix_eur,changement_code,recommandation,url
+Orange Pi 5 Plus,SBC RK3588,RK3588,NPU 6 TOPS,16,2x HDMI 2.1,Oui (kit officiel),Oui,90-120,Portage RKNN,Kiosk sobre faible conso,https://www.orangepi.org/html/hardWare/computerAndMicrocontrollers/details/Orange-Pi-5-plus.html
+FriendlyElec NanoPC-T6,SBC RK3588,RK3588,NPU 6 TOPS,16,2x HDMI 2.1 + 1x DP,Oui (kit inclus),Oui,130-160,Portage RKNN,Production qualité supérieure,https://www.friendlyelec.com/index.php?route=product%2Fproduct&product_id=292
+Khadas Edge2,SBC RK3588,RK3588,NPU 6 TOPS,16,1x HDMI 2.0 + 1x USB-C DP,Oui (intégré),Oui,150-180,Portage RKNN,Compact ventilateur silencieux,https://www.khadas.com/product-page/edge2
+Radxa Rock 5B,SBC RK3588,RK3588,NPU 6 TOPS,16,2x HDMI,Non (passif),Oui,80-110,Portage RKNN,Référence actuelle (trop chaud soutenu),https://radxa.com/products/rock5/5b/
+Jetson Orin Nano 8GB,Edge AI NVIDIA,Cortex-A78AE + Ampere GPU,40 TOPS,8,2x (via carrier board),Oui (requis),Oui,250-300,Aucun (CUDA natif),Entrée de gamme Jetson,https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-orin/
+Jetson Orin NX 16GB,Edge AI NVIDIA,Cortex-A78AE + Ampere GPU,100 TOPS,16,2x (via carrier board),Oui (requis),Oui,450-550,Aucun (CUDA natif),Meilleur rapport perf/prix Jetson,https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-orin/
+Jetson AGX Orin 64GB,Edge AI NVIDIA,Cortex-A78AE + Ampere GPU,275 TOPS,64,2x (via carrier board),Oui (intégré),Oui,950-1100,Aucun (CUDA natif),Overkill,https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-orin/
+Beelink SER7,Mini-PC x86,Ryzen 9 7940HS (8c Zen4),Radeon 780M,64,2x HDMI 2.0 + 1x DP,Oui (intégré),Oui,350-400,Aucun (x86 natif),Meilleur rapport global plug-and-play,https://www.bee-link.com/products/beelink-ser7-7840hs
+Minisforum UM890 Pro,Mini-PC x86,Ryzen 9 8945HS (8c Zen4),Radeon 780M,64,2x HDMI + 2x USB-C DP,Oui (intégré),Oui,420-480,Aucun (x86 natif),4 sorties display,https://www.minisforum.com/products/minisforum-um890-pro
+Intel NUC 13 Pro,Mini-PC x86,Core i7-1360P (12c),Iris Xe,64,2x HDMI + 2x Thunderbolt 4,Oui (intégré),Oui,480-550,Aucun (x86 natif),Ecosystème Intel mature,https://www.asus.com/displays-desktops/nucs/nuc-mini-pcs/asus-nuc-13-pro/

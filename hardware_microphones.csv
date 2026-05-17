@@ -1,0 +1,13 @@
+nom,famille,capsules,forme,interface,dsp_beamforming,aec,prix_eur,plug_play_linux,recommandation_kiosk,url
+Seeed ReSpeaker USB Mic Array v2.0,XMOS XVF,7,Circulaire,USB,XVF3000,Non,60,Oui,Budget plug & play rapide,https://www.seeedstudio.com/ReSpeaker-Mic-Array-v2-0.html
+Seeed ReSpeaker USB Mic Array v2.1,XMOS XVF,7,Circulaire,USB,XVF3000,Non,65,Oui,Idem v2.0 + LED RGB,https://www.seeedstudio.com/ReSpeaker-USB-Mic-Array-p-4247.html
+XMOS XK-VOICE-L71,XMOS XVF,7,Circulaire,USB,XVF3610,Non,120,Oui,Kit dev officiel XMOS,https://www.xmos.com/xk-voice-l71
+XMOS VocalFusion XVF3800,XMOS XVF,2-4,Linéaire configurable,USB,XVF3800,Oui,150,Oui,AEC intégré qualité max maker,https://www.xmos.com/xk-voice-sq66
+MATRIX Voice,Matrix Labs,8,Circulaire,HAT RPi + USB,FPGA,Non,65,Oui,ODAS compatible,https://store.matrix.one/products/matrix-voice
+MATRIX Creator,Matrix Labs,8,Circulaire,HAT RPi,FPGA,Non,95,Oui,+ capteurs IMU Z-Wave,https://store.matrix.one/products/matrix-creator
+miniDSP UMA-8,miniDSP,7,Circulaire,USB,ODAS software,Non,150,Oui,Meilleure qualité audio capsules Knowles,https://www.minidsp.com/products/usb-audio-interface/uma-8-microphone-array
+miniDSP UMA-16,miniDSP,16,Linéaire,USB,ODAS software,Non,350,Oui,Vrai line array rejet latéral optimal,https://www.minidsp.com/products/usb-audio-interface/uma-16-microphone-array
+Seeed ReSpeaker 4-Mic Linear Array,Seeed,4,Linéaire,HAT RPi (GPIO),Software,Non,25,Non (HAT),Line array pur nécessite adaptateur USB,https://www.seeedstudio.com/ReSpeaker-4-Mic-Linear-Array-Kit-for-Raspberry-Pi.html
+Seeed ReSpeaker 6-Mic Circular Array,Seeed,6,Circulaire,HAT RPi (GPIO),Software,Non,35,Non (HAT),Nécessite adaptateur USB,https://www.seeedstudio.com/ReSpeaker-6-Mic-Circular-Array-Kit-for-Raspberry-Pi.html
+Waveshare WM8960 Audio HAT,Waveshare,2,Linéaire,HAT + USB,Aucun,Non,20,Oui,Basique sans beamforming DSP,https://www.waveshare.com/wm8960-audio-hat.htm
+Espressif ESP32-Korvo,Espressif,3,Linéaire,USB,Software (ESP-SR),Oui,30,Oui,Line array compact AEC logiciel,https://www.espressif.com/en/dev-board/esp32-korvo-en

@@ -1,10 +1,12 @@
 """Web interface — FastAPI + WebSocket, dual-sided real-time translation kiosk."""
 import asyncio
+import io
 import json
 import os
 import queue
 import re
 import subprocess
+import sys
 import threading
 import time
 import unicodedata
@@ -14,10 +16,12 @@ import noisereduce as nr
 import numpy as np
 import resampy
 import sounddevice as sd
+import soundfile as sf
 import torch
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from faster_whisper import WhisperModel
 from optimum.onnxruntime import ORTModelForSeq2SeqLM
 from transformers import AutoTokenizer
@@ -74,7 +78,22 @@ nmt_model = ORTModelForSeq2SeqLM.from_pretrained(MODEL_DIR, provider=provider, u
 print("[init] Ready.\n")
 
 # ── App & state ───────────────────────────────────────────────────────────────
+FONTS_DIR = os.path.join(os.path.dirname(__file__), "..", "fonts")
+os.makedirs(FONTS_DIR, exist_ok=True)
+
 app = FastAPI()
+app.mount("/fonts", StaticFiles(directory=FONTS_DIR), name="fonts")
+
+display_config: Dict = {
+    "bg_color": "#000000",
+    "text_color": "#ffffff",
+    "font_size": 32,
+    "max_phrases": 4,
+    "font_family": "'Segoe UI', system-ui, sans-serif",
+    "custom_fonts": [],
+}
+config_clients: Set[WebSocket] = set()
+
 ws_clients: Dict[str, Set[WebSocket]] = {"A": set(), "B": set()}
 broadcast_queues: Dict[str, asyncio.Queue] = {}
 recent_messages: Dict[str, list] = {"A": [], "B": []}  # last 4 per side
@@ -103,6 +122,16 @@ async def _broadcast_log(entry: dict):
         except Exception:
             dead.add(ws)
     admin_clients.difference_update(dead)
+
+async def _broadcast_config_ws():
+    payload = json.dumps({"kind": "config_update", **display_config})
+    dead = set()
+    for ws in config_clients.copy():
+        try:
+            await ws.send_text(payload)
+        except Exception:
+            dead.add(ws)
+    config_clients.difference_update(dead)
 
 # VAD, Whisper, and NLLB share the same CUDA context — serialize all GPU calls
 _infer_lock = threading.Lock()
@@ -169,6 +198,46 @@ def translate(text: str, src_nllb: str, tgt_nllb: str) -> tuple[str, bool]:
     return result, False
 
 
+def _run_audio_inference(audio_16k: np.ndarray, side: str, fixed_src_lang: str | None) -> dict | None:
+    """Denoise → Whisper → NLLB → broadcast. Returns result dict, or None if no speech detected."""
+    audio_16k = nr.reduce_noise(y=audio_16k, sr=16000, stationary=False)
+    t0 = time.time()
+    prompt = "Conversation en français." if fixed_src_lang == "fr" else None
+    with _infer_lock:
+        segments, info = whisper_model.transcribe(
+            audio_16k, beam_size=2,
+            language=fixed_src_lang,
+            initial_prompt=prompt,
+            condition_on_previous_text=False,
+        )
+    transcript = " ".join(s.text for s in segments).strip()
+    if not transcript:
+        return None
+
+    detected = fixed_src_lang or info.language
+    src_nllb = NLLB_LANG_MAP.get(detected, "fra_Latn")
+    tgt_lang = TARGET_LANG[side]
+    translation, cached = translate(transcript, src_nllb, tgt_lang)
+    elapsed = int((time.time() - t0) * 1000)
+
+    msg = {
+        "original": transcript,
+        "translated": translation,
+        "src_lang": LANG_NAMES.get(src_nllb, detected),
+        "tgt_lang": LANG_NAMES.get(tgt_lang, tgt_lang),
+        "ms": elapsed,
+    }
+    print(f"[side {side}] {elapsed}ms {'(cache)' if cached else ''} [{detected}→{tgt_lang}] {transcript!r} → {translation!r}")
+    log_event("translation",
+        side=side, ms=elapsed, cached=cached,
+        src_lang=msg["src_lang"], tgt_lang=msg["tgt_lang"],
+        original=transcript, translated=translation,
+    )
+    if event_loop and side in broadcast_queues:
+        asyncio.run_coroutine_threadsafe(broadcast_queues[side].put(msg), event_loop)
+    return msg
+
+
 def pipeline_worker(side: str, mic_device: int, sample_rate: int = 48000, channels: int = 1, fixed_src_lang: str | None = None):
     audio_q: queue.Queue = queue.Queue()
     chunk_samples = int(VAD_CHUNK_S * 16000)
@@ -177,12 +246,6 @@ def pipeline_worker(side: str, mic_device: int, sample_rate: int = 48000, channe
         # Average channels if multichannel capture
         mono = indata.mean(axis=1, keepdims=True) if indata.shape[1] > 1 else indata
         audio_q.put(mono.copy())
-
-    def push(msg: dict):
-        if event_loop and side in broadcast_queues:
-            asyncio.run_coroutine_threadsafe(
-                broadcast_queues[side].put(msg), event_loop
-            )
 
     buffer = np.array([], dtype=np.float32)
     speech_buffer = np.array([], dtype=np.float32)
@@ -217,43 +280,9 @@ def pipeline_worker(side: str, mic_device: int, sample_rate: int = 48000, channe
                 if len(speech_buffer) < 16000:
                     speech_buffer = np.array([], dtype=np.float32)
                     continue
-
-                audio_16k = nr.reduce_noise(y=speech_buffer, sr=16000, stationary=False)
+                chunk = speech_buffer
                 speech_buffer = np.array([], dtype=np.float32)
-
-                t0 = time.time()
-                prompt = "Conversation en français." if fixed_src_lang == "fr" else None
-                with _infer_lock:
-                    segments, info = whisper_model.transcribe(
-                        audio_16k, beam_size=2,
-                        language=fixed_src_lang,
-                        initial_prompt=prompt,
-                        condition_on_previous_text=False,
-                    )
-                transcript = " ".join(s.text for s in segments).strip()
-                if not transcript:
-                    continue
-
-                detected = fixed_src_lang or info.language
-                src_nllb = NLLB_LANG_MAP.get(detected, "fra_Latn")
-                tgt_lang = TARGET_LANG[side]  # read dynamically — may change via UI
-                translation, cached = translate(transcript, src_nllb, tgt_lang)
-                elapsed = int((time.time() - t0) * 1000)
-
-                print(f"[side {side}] {elapsed}ms {'(cache)' if cached else ''} [{detected}→{tgt_lang}] {transcript!r} → {translation!r}")
-                log_event("translation",
-                    side=side, ms=elapsed, cached=cached,
-                    src_lang=LANG_NAMES.get(src_nllb, detected),
-                    tgt_lang=LANG_NAMES.get(tgt_lang, tgt_lang),
-                    original=transcript, translated=translation,
-                )
-                push({
-                    "original": transcript,
-                    "translated": translation,
-                    "src_lang": LANG_NAMES.get(src_nllb, detected),
-                    "tgt_lang": LANG_NAMES.get(tgt_lang, tgt_lang),
-                    "ms": elapsed,
-                })
+                _run_audio_inference(chunk, side, fixed_src_lang)
 
 
 # ── HTML UI ───────────────────────────────────────────────────────────────────
@@ -264,11 +293,17 @@ HTML = """<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>lingua_display</title>
   <style>
+    :root {
+      --bg: #000000;
+      --text: #ffffff;
+      --font-size: 32px;
+      --font-family: 'Segoe UI', system-ui, sans-serif;
+    }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      background: #000000;
-      color: #ffffff;
-      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-family);
       display: flex;
       height: 100vh;
       overflow: hidden;
@@ -348,7 +383,7 @@ HTML = """<!DOCTYPE html>
     .feed-item:nth-child(3) { opacity: 0.7; }
     .feed-item:nth-child(4) { opacity: 1; }
     .feed-item .f-translated {
-      font-size: clamp(20px, 2.8vw, 40px);
+      font-size: var(--font-size);
       font-weight: 300;
       line-height: 1.35;
       word-break: break-word;
@@ -368,6 +403,18 @@ HTML = """<!DOCTYPE html>
       from { opacity: 0; transform: translateY(12px); }
       to   { transform: translateY(0); }
     }
+    #page-controls {
+      position: fixed; bottom: 14px; right: 14px;
+      display: flex; gap: 6px; opacity: 0.08; transition: opacity 0.25s; z-index: 99;
+    }
+    #page-controls:hover { opacity: 1; }
+    .page-btn {
+      background: #111; color: #777; border: 1px solid #2a2a2a;
+      border-radius: 5px; padding: 5px 11px; font-size: 11px;
+      letter-spacing: 0.5px; cursor: pointer;
+    }
+    .page-btn:hover { color: #ddd; border-color: #444; }
+    .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -402,7 +449,36 @@ HTML = """<!DOCTYPE html>
   </div>
 
   <script>
-    const MAX = 4;
+    let MAX = 4;
+
+    function applyConfig(cfg) {
+      const r = document.documentElement.style;
+      if (cfg.bg_color   !== undefined) r.setProperty('--bg',          cfg.bg_color);
+      if (cfg.text_color !== undefined) r.setProperty('--text',        cfg.text_color);
+      if (cfg.font_size  !== undefined) r.setProperty('--font-size',   cfg.font_size + 'px');
+      if (cfg.font_family!== undefined) r.setProperty('--font-family', cfg.font_family);
+      if (cfg.max_phrases !== undefined) {
+        MAX = cfg.max_phrases;
+        ['A','B'].forEach(s => {
+          const f = document.getElementById('feed' + s);
+          if (f) while (f.children.length > MAX) f.removeChild(f.firstChild);
+        });
+      }
+      if (cfg.custom_fonts) cfg.custom_fonts.forEach(fn => {
+        if (document.querySelector('[data-font="' + fn + '"]')) return;
+        const nm = fn.replace(/\.[^.]+$/, '').replace(/_/g, ' ');
+        const st = document.createElement('style');
+        st.setAttribute('data-font', fn);
+        st.textContent = "@font-face{font-family:'" + nm + "';src:url('/fonts/" + fn + "')}";
+        document.head.appendChild(st);
+      });
+    }
+
+    function connectConfig() {
+      const ws = new WebSocket('ws://' + location.host + '/ws/config');
+      ws.onmessage = e => applyConfig(JSON.parse(e.data));
+      ws.onclose = () => setTimeout(connectConfig, 2000);
+    }
 
     function setLang(side, code) {
       fetch('/lang/' + side + '?code=' + code, { method: 'POST' });
@@ -424,7 +500,6 @@ HTML = """<!DOCTYPE html>
 
       feed.appendChild(item);
 
-      // Keep only last MAX items
       while (feed.children.length > MAX) feed.removeChild(feed.firstChild);
     }
 
@@ -443,7 +518,26 @@ HTML = """<!DOCTYPE html>
 
     connect('A');
     connect('B');
+    connectConfig();
+
+    function hardRefresh() {
+      location.replace(location.pathname + '?_=' + Date.now());
+    }
+
+    async function restartServer() {
+      if (!confirm('Redémarrer le serveur ?')) return;
+      const btn = document.getElementById('restart-btn');
+      btn.textContent = '…'; btn.disabled = true;
+      try { await fetch('/restart', { method: 'POST' }); } catch(e) {}
+      const poll = setInterval(() => {
+        fetch('/').then(r => { if (r.ok) { clearInterval(poll); location.reload(); } }).catch(() => {});
+      }, 1000);
+    }
   </script>
+  <div id="page-controls">
+    <button class="page-btn" onclick="hardRefresh()">Refresh</button>
+    <button class="page-btn" id="restart-btn" onclick="restartServer()">Restart</button>
+  </div>
 </body>
 </html>
 """
@@ -464,10 +558,16 @@ def make_single_side_html(side: str) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>lingua_display — Side {side}</title>
   <style>
+    :root {{
+      --bg: #000000;
+      --text: #ffffff;
+      --font-size: 32px;
+      --font-family: 'Segoe UI', system-ui, sans-serif;
+    }}
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{
-      background: #ffffff; color: #111111;
-      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg); color: var(--text);
+      font-family: var(--font-family);
       display: flex; flex-direction: column;
       height: 100vh; overflow: hidden;
       padding: 28px 36px; gap: 16px;
@@ -507,7 +607,7 @@ def make_single_side_html(side: str) -> str:
     .feed-item:nth-child(3) {{ opacity: 0.7; }}
     .feed-item:nth-child(4) {{ opacity: 1; }}
     .feed-item .f-translated {{
-      font-size: clamp(24px, 4vw, 64px); font-weight: 300;
+      font-size: var(--font-size); font-weight: 300;
       line-height: 1.35; word-break: break-word;
     }}
     .feed-item .f-original {{ font-size: 13px; color: #555; font-style: italic; margin-top: 4px; }}
@@ -516,6 +616,18 @@ def make_single_side_html(side: str) -> str:
       from {{ opacity: 0; transform: translateY(12px); }}
       to   {{ transform: translateY(0); }}
     }}
+    #page-controls {{
+      position: fixed; bottom: 14px; right: 14px;
+      display: flex; gap: 6px; opacity: 0.08; transition: opacity 0.25s; z-index: 99;
+    }}
+    #page-controls:hover {{ opacity: 1; }}
+    .page-btn {{
+      background: #111; color: #777; border: 1px solid #2a2a2a;
+      border-radius: 5px; padding: 5px 11px; font-size: 11px;
+      letter-spacing: 0.5px; cursor: pointer;
+    }}
+    .page-btn:hover {{ color: #ddd; border-color: #444; }}
+    .page-btn:disabled {{ opacity: 0.4; cursor: not-allowed; }}
   </style>
 </head>
 <body>
@@ -526,7 +638,35 @@ def make_single_side_html(side: str) -> str:
   </div>
   <div class="feed" id="feed{side}"></div>
   <script>
-    const MAX = 4;
+    let MAX = 4;
+
+    function applyConfig(cfg) {{
+      const r = document.documentElement.style;
+      if (cfg.bg_color    !== undefined) r.setProperty('--bg',          cfg.bg_color);
+      if (cfg.text_color  !== undefined) r.setProperty('--text',        cfg.text_color);
+      if (cfg.font_size   !== undefined) r.setProperty('--font-size',   cfg.font_size + 'px');
+      if (cfg.font_family !== undefined) r.setProperty('--font-family', cfg.font_family);
+      if (cfg.max_phrases !== undefined) {{
+        MAX = cfg.max_phrases;
+        const f = document.getElementById('feed{side}');
+        if (f) while (f.children.length > MAX) f.removeChild(f.firstChild);
+      }}
+      if (cfg.custom_fonts) cfg.custom_fonts.forEach(fn => {{
+        if (document.querySelector('[data-font="' + fn + '"]')) return;
+        const nm = fn.replace(/\.[^.]+$/, '').replace(/_/g, ' ');
+        const st = document.createElement('style');
+        st.setAttribute('data-font', fn);
+        st.textContent = "@font-face{{font-family:'" + nm + "';src:url('/fonts/" + fn + "')}}";
+        document.head.appendChild(st);
+      }});
+    }}
+
+    function connectConfig() {{
+      const ws = new WebSocket('ws://' + location.host + '/ws/config');
+      ws.onmessage = e => applyConfig(JSON.parse(e.data));
+      ws.onclose = () => setTimeout(connectConfig, 2000);
+    }}
+
     function setLang(side, code) {{
       fetch('/lang/' + side + '?code=' + code, {{ method: 'POST' }});
     }}
@@ -555,7 +695,26 @@ def make_single_side_html(side: str) -> str:
       ws.onclose = () => setTimeout(connect, 1500);
     }}
     connect();
+    connectConfig();
+
+    function hardRefresh() {{
+      location.replace(location.pathname + '?_=' + Date.now());
+    }}
+
+    async function restartServer() {{
+      if (!confirm('Redémarrer le serveur ?')) return;
+      const btn = document.getElementById('restart-btn');
+      btn.textContent = '…'; btn.disabled = true;
+      try {{ await fetch('/restart', {{ method: 'POST' }}); }} catch(e) {{}}
+      const poll = setInterval(() => {{
+        fetch('/').then(r => {{ if (r.ok) {{ clearInterval(poll); location.reload(); }} }}).catch(() => {{}});
+      }}, 1000);
+    }}
   </script>
+  <div id="page-controls">
+    <button class="page-btn" onclick="hardRefresh()">Refresh</button>
+    <button class="page-btn" id="restart-btn" onclick="restartServer()">Restart</button>
+  </div>
 </body>
 </html>"""
 
@@ -625,6 +784,63 @@ ADMIN_HTML = """<!DOCTYPE html>
     }
     #stats span { color: #666; }
     #stats b { color: #888; }
+    #upload-bar {
+      background: #0d0d0d; border-bottom: 1px solid #1e1e1e;
+      padding: 10px 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    #upload-bar label { font-size: 11px; color: #555; text-transform: uppercase; letter-spacing: 1px; }
+    #upload-side {
+      background: #1a1a1a; color: #aaa; border: 1px solid #2a2a2a;
+      padding: 4px 8px; border-radius: 5px; font-size: 12px; cursor: pointer;
+    }
+    #upload-file {
+      font-size: 12px; color: #777;
+      background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 5px;
+      padding: 4px 8px; cursor: pointer; flex: 1; min-width: 0;
+    }
+    #upload-file::file-selector-button {
+      background: #252525; color: #888; border: none; border-radius: 4px;
+      padding: 3px 8px; font-size: 11px; cursor: pointer; margin-right: 8px;
+    }
+    #upload-btn {
+      background: #1a3a2a; color: #22c55e; border: 1px solid #1e5c3a;
+      padding: 5px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; white-space: nowrap;
+    }
+    #upload-btn:hover { background: #1e4a33; }
+    #upload-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #upload-status { font-size: 12px; color: #555; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #upload-status.ok { color: #22c55e; }
+    #upload-status.err { color: #f87171; }
+
+    /* ── Display settings ── */
+    #display-bar {
+      background: #080808; border-bottom: 1px solid #1a1a1a;
+      padding: 8px 24px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    }
+    .bar-label { font-size: 10px; color: #3a3a3a; text-transform: uppercase; letter-spacing: 1px; white-space: nowrap; }
+    .ctrl-grp { display: flex; align-items: center; gap: 5px; }
+    .ctrl-grp > label { font-size: 11px; color: #4a4a4a; white-space: nowrap; }
+    .ctrl-sep { width: 1px; height: 18px; background: #1e1e1e; margin: 0 2px; }
+    input[type="color"] {
+      width: 28px; height: 22px; border: 1px solid #2a2a2a; border-radius: 3px;
+      cursor: pointer; background: none; padding: 1px 2px;
+    }
+    input[type="range"]#cfg-size { width: 72px; accent-color: #22c55e; cursor: pointer; }
+    #cfg-size-val { font-size: 11px; color: #555; min-width: 30px; }
+    input[type="number"]#cfg-phrases {
+      width: 44px; background: #1a1a1a; color: #aaa; border: 1px solid #2a2a2a;
+      border-radius: 4px; padding: 3px 5px; font-size: 12px; text-align: center;
+    }
+    #cfg-font {
+      background: #1a1a1a; color: #aaa; border: 1px solid #2a2a2a;
+      border-radius: 4px; padding: 3px 8px; font-size: 12px; cursor: pointer;
+    }
+    #font-upload-btn {
+      background: #1a1a1a; color: #666; border: 1px solid #2a2a2a;
+      padding: 3px 10px; border-radius: 4px; font-size: 11px; cursor: pointer;
+    }
+    #font-upload-btn:hover { color: #aaa; }
+    #font-status { font-size: 11px; color: #22c55e; }
   </style>
 </head>
 <body>
@@ -634,8 +850,59 @@ ADMIN_HTML = """<!DOCTYPE html>
     <div class="controls">
       <button onclick="clearLog()">Effacer</button>
       <button onclick="togglePause()" id="pauseBtn">Pause</button>
+      <button onclick="hardRefresh()">Refresh</button>
+      <button id="admin-restart-btn" onclick="restartServer()">Restart</button>
     </div>
   </header>
+  <div id="display-bar">
+    <span class="bar-label">Affichage</span>
+    <div class="ctrl-grp">
+      <label>Fond</label>
+      <input type="color" id="cfg-bg" value="#000000" oninput="pushConfig('bg_color', this.value)">
+    </div>
+    <div class="ctrl-grp">
+      <label>Texte</label>
+      <input type="color" id="cfg-text" value="#ffffff" oninput="pushConfig('text_color', this.value)">
+    </div>
+    <div class="ctrl-sep"></div>
+    <div class="ctrl-grp">
+      <label>Taille</label>
+      <input type="range" id="cfg-size" min="10" max="120" value="32"
+             oninput="document.getElementById('cfg-size-val').textContent=this.value+'px'; pushConfig('font_size', +this.value)">
+      <span id="cfg-size-val">32px</span>
+    </div>
+    <div class="ctrl-grp">
+      <label>Phrases</label>
+      <input type="number" id="cfg-phrases" min="1" max="12" value="4"
+             onchange="pushConfig('max_phrases', +this.value)">
+    </div>
+    <div class="ctrl-sep"></div>
+    <div class="ctrl-grp">
+      <label>Police</label>
+      <select id="cfg-font" onchange="pushConfig('font_family', this.value)">
+        <option value="'Segoe UI', system-ui, sans-serif">Segoe UI</option>
+        <option value="system-ui, sans-serif">System UI</option>
+        <option value="Georgia, serif">Georgia</option>
+        <option value="'Courier New', monospace">Courier New</option>
+        <option value="Arial, sans-serif">Arial</option>
+        <option value="'Times New Roman', serif">Times New Roman</option>
+      </select>
+      <input type="file" id="font-file" accept=".ttf,.otf,.woff,.woff2" style="display:none" onchange="uploadFont(this)">
+      <button id="font-upload-btn" onclick="document.getElementById('font-file').click()">+ Police</button>
+      <span id="font-status"></span>
+    </div>
+  </div>
+
+  <div id="upload-bar">
+    <label>Test audio</label>
+    <select id="upload-side">
+      <option value="A">Side A (source : français)</option>
+      <option value="B">Side B (source : auto)</option>
+    </select>
+    <input type="file" id="upload-file" accept=".wav,.flac,.ogg,.opus">
+    <button id="upload-btn" onclick="uploadAudio()">Envoyer</button>
+    <span id="upload-status"></span>
+  </div>
   <div id="log"></div>
   <div id="stats">
     <span>Traductions : <b id="st-total">0</b></span>
@@ -700,6 +967,96 @@ ADMIN_HTML = """<!DOCTYPE html>
       while (log.children.length > 500) log.removeChild(log.firstChild);
     }
 
+    async function pushConfig(key, value) {
+      await fetch('/config/display', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [key]: value })
+      });
+    }
+
+    async function uploadFont(input) {
+      const file = input.files[0];
+      if (!file) return;
+      const status = document.getElementById('font-status');
+      status.textContent = '…';
+      const fd = new FormData();
+      fd.append('file', file);
+      const r = await fetch('/upload/font', { method: 'POST', body: fd });
+      const d = await r.json();
+      const sel = document.getElementById('cfg-font');
+      const opt = document.createElement('option');
+      const ff = "'" + d.font_name + "', sans-serif";
+      opt.value = ff; opt.textContent = d.font_name + ' ✓'; opt.selected = true;
+      sel.appendChild(opt);
+      pushConfig('font_family', ff);
+      status.textContent = d.font_name + ' chargée';
+      setTimeout(() => status.textContent = '', 3000);
+      input.value = '';
+    }
+
+    // Init display controls from server
+    fetch('/config/display').then(r => r.json()).then(cfg => {
+      document.getElementById('cfg-bg').value = cfg.bg_color;
+      document.getElementById('cfg-text').value = cfg.text_color;
+      document.getElementById('cfg-size').value = cfg.font_size;
+      document.getElementById('cfg-size-val').textContent = cfg.font_size + 'px';
+      document.getElementById('cfg-phrases').value = cfg.max_phrases;
+      const sel = document.getElementById('cfg-font');
+      (cfg.custom_fonts || []).forEach(fn => {
+        const nm = fn.replace(/\.[^.]+$/, '').replace(/_/g, ' ');
+        const opt = document.createElement('option');
+        opt.value = "'" + nm + "', sans-serif"; opt.textContent = nm + ' ✓';
+        sel.appendChild(opt);
+      });
+      for (const opt of sel.options) {
+        if (opt.value === cfg.font_family) { opt.selected = true; break; }
+      }
+    });
+
+    async function uploadAudio() {
+      const side = document.getElementById('upload-side').value;
+      const fileInput = document.getElementById('upload-file');
+      const status = document.getElementById('upload-status');
+      const btn = document.getElementById('upload-btn');
+      if (!fileInput.files.length) { status.textContent = 'Choisir un fichier'; status.className = 'err'; return; }
+      btn.disabled = true;
+      status.textContent = 'Traitement…';
+      status.className = '';
+      const fd = new FormData();
+      fd.append('file', fileInput.files[0]);
+      try {
+        const r = await fetch('/upload/' + side, { method: 'POST', body: fd });
+        const d = await r.json();
+        if (!r.ok || d.error) {
+          status.textContent = d.detail || d.error || 'Erreur';
+          status.className = 'err';
+        } else {
+          status.textContent = '✓ "' + d.original + '" → "' + d.translated + '" (' + d.ms + ' ms)';
+          status.className = 'ok';
+        }
+      } catch(e) {
+        status.textContent = 'Erreur réseau : ' + e.message;
+        status.className = 'err';
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function hardRefresh() {
+      location.replace(location.pathname + '?_=' + Date.now());
+    }
+
+    async function restartServer() {
+      if (!confirm('Redémarrer le serveur ?')) return;
+      const btn = document.getElementById('admin-restart-btn');
+      btn.textContent = '…'; btn.disabled = true;
+      try { await fetch('/restart', { method: 'POST' }); } catch(e) {}
+      const poll = setInterval(() => {
+        fetch('/').then(r => { if (r.ok) { clearInterval(poll); location.reload(); } }).catch(() => {});
+      }, 1000);
+    }
+
     function connect() {
       const ws = new WebSocket('ws://' + location.host + '/ws/admin');
       const status = document.getElementById('status');
@@ -735,6 +1092,82 @@ async def ws_admin(websocket: WebSocket):
             await websocket.receive()
     except (WebSocketDisconnect, Exception):
         admin_clients.discard(websocket)
+
+
+@app.post("/restart")
+async def restart_server():
+    def _do_restart():
+        time.sleep(0.6)
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    threading.Thread(target=_do_restart, daemon=False).start()
+    return JSONResponse({"status": "restarting"})
+
+
+@app.get("/config/display")
+async def get_display_config():
+    return JSONResponse(display_config)
+
+
+@app.post("/config/display")
+async def set_display_config(body: dict):
+    allowed = {"bg_color", "text_color", "font_size", "max_phrases", "font_family"}
+    for k, v in body.items():
+        if k in allowed:
+            display_config[k] = v
+    await _broadcast_config_ws()
+    return JSONResponse(display_config)
+
+
+@app.post("/upload/font")
+async def upload_font(file: UploadFile = File(...)):
+    name = re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename or "font")
+    path = os.path.join(FONTS_DIR, name)
+    with open(path, "wb") as f:
+        f.write(await file.read())
+    if name not in display_config["custom_fonts"]:
+        display_config["custom_fonts"].append(name)
+    font_name = os.path.splitext(name)[0].replace("_", " ")
+    await _broadcast_config_ws()
+    return JSONResponse({"filename": name, "url": f"/fonts/{name}", "font_name": font_name})
+
+
+@app.websocket("/ws/config")
+async def ws_config(websocket: WebSocket):
+    await websocket.accept()
+    config_clients.add(websocket)
+    try:
+        await websocket.send_text(json.dumps({"kind": "config_update", **display_config}))
+        while True:
+            await websocket.receive()
+    except (WebSocketDisconnect, Exception):
+        config_clients.discard(websocket)
+
+
+@app.post("/upload/{side}")
+async def upload_audio(side: str, file: UploadFile = File(...)):
+    """Upload an audio file and run it through the full pipeline for the given side."""
+    if side not in ("A", "B"):
+        raise HTTPException(status_code=404)
+
+    data = await file.read()
+    try:
+        audio, sr = sf.read(io.BytesIO(data), dtype="float32", always_2d=False)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Cannot read audio file: {e}")
+
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+
+    if sr != 16000:
+        audio = resampy.resample(audio, sr, 16000)
+
+    fixed = "fr" if side == "A" else None
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _run_audio_inference, audio, side, fixed)
+
+    if result is None:
+        return JSONResponse({"error": "no_speech"})
+    return JSONResponse(result)
 
 
 @app.post("/lang/{side}")
@@ -816,9 +1249,12 @@ async def startup():
     asyncio.create_task(broadcast_worker("B"))
     _load_cache()
     threading.Thread(target=_cache_saver, daemon=True).start()
-    DEVICE_A, DEVICE_B = find_usb_mics()
-    threading.Thread(target=pipeline_worker, args=("A", DEVICE_A, USB_MIC_SAMPLERATE, 1, "fr"), daemon=True).start()
-    threading.Thread(target=pipeline_worker, args=("B", DEVICE_B, USB_MIC_SAMPLERATE, 1), daemon=True).start()
+    try:
+        DEVICE_A, DEVICE_B = find_usb_mics()
+        threading.Thread(target=pipeline_worker, args=("A", DEVICE_A, USB_MIC_SAMPLERATE, 1, "fr"), daemon=True).start()
+        threading.Thread(target=pipeline_worker, args=("B", DEVICE_B, USB_MIC_SAMPLERATE, 1), daemon=True).start()
+    except RuntimeError as e:
+        print(f"[init] WARNING: mic pipeline disabled — {e}")
 
 
 if __name__ == "__main__":

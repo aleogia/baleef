@@ -19,7 +19,7 @@ Person B (speaks EN) ──► Mic B ──► VAD ──► DenoiseNR ──►
 - **Side B always outputs French** — `TARGET_LANG["B"]` locked to `fra_Latn`, UI dropdown removed
 - **12 languages** selectable for side A target via UI
 - **Noise suppression** via noisereduce (filters background voices and ambient noise)
-- **USB mic auto-detection** — devices resolved by name at startup, no hardcoded index
+- **USB mic auto-detection** — devices resolved by name at startup, no hardcoded index; server starts normally if mics are absent (pipeline disabled with a warning)
 - **Translation cache** — persisted to disk, O(1) lookup, near-zero latency on repeated phrases
 - **Display sleep prevention** — `xset` called at server startup, system suspend masked via systemd
 - **Target hardware** — ARM RK3588 SoC running Debian ARM64 (Radxa Rock 5B)
@@ -35,7 +35,7 @@ Person B (speaks EN) ──► Mic B ──► VAD ──► DenoiseNR ──►
 | Speech-to-text | faster-whisper medium | Side A forced to `fr`; side B auto-detects |
 | Translation | NLLB-200 distilled-600M ONNX int8 | Neural machine translation |
 | Translation cache | JSON on disk | O(1) lookup, saves every 30s + on shutdown |
-| Display | FastAPI + WebSocket | Black background, white text, 4-phrase feed |
+| Display | FastAPI + WebSocket | Black background, white text, configurable feed |
 
 ## Web Interface
 
@@ -44,7 +44,7 @@ Person B (speaks EN) ──► Mic B ──► VAD ──► DenoiseNR ──►
 | `/` | Dual-sided view — both columns side by side |
 | `/side/A` | Full-screen side A — for dedicated display |
 | `/side/B` | Full-screen side B — for dedicated display |
-| `/admin` | Backoffice — live log, cache stats, latency, pause/clear |
+| `/admin` | Backoffice — live log, cache stats, latency, pause/clear, display settings, audio upload |
 
 ### Kiosk mode (Chromium, dual display)
 ```bash
@@ -57,6 +57,67 @@ DISPLAY=:0.1 chromium --kiosk --app=http://localhost:8000/side/B
 sudo apt install cog
 cog http://localhost:8000/side/A
 ```
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/` | Dual-sided display view |
+| GET | `/side/{A\|B}` | Full-screen single-side view |
+| GET | `/admin` | Admin backoffice |
+| POST | `/lang/{A\|B}?code=<nllb_code>` | Change target language for side A |
+| GET | `/config/display` | Get current display configuration |
+| POST | `/config/display` | Update display configuration (JSON body) |
+| POST | `/upload/{A\|B}` | Upload an audio file and run through the pipeline |
+| POST | `/upload/font` | Upload a custom font file (TTF/OTF/WOFF/WOFF2) |
+| POST | `/restart` | Restart the server process |
+| WS | `/ws/{A\|B}` | Translation feed for side A or B |
+| WS | `/ws/admin` | Admin log feed |
+| WS | `/ws/config` | Display config updates (received by all display pages) |
+
+## Display Configuration
+
+The display can be customised live from the admin backoffice (`/admin`) without reloading the kiosk pages. Changes are broadcast instantly via `/ws/config` to all connected screens.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `bg_color` | `#000000` | Background colour |
+| `text_color` | `#ffffff` | Main translated text colour |
+| `font_size` | `32` | Font size in px for the translated text |
+| `max_phrases` | `4` | Number of phrases kept in the feed |
+| `font_family` | `'Segoe UI', system-ui, sans-serif` | CSS font-family string |
+| `custom_fonts` | `[]` | Uploaded font filenames served under `/fonts/` |
+
+Example — change background and font size via API:
+```bash
+curl -X POST http://localhost:8000/config/display \
+  -H "Content-Type: application/json" \
+  -d '{"bg_color": "#1a1a2e", "font_size": 48}'
+```
+
+## Audio Upload (Remote Testing)
+
+When microphones are not available (e.g. remote development), audio files can be uploaded directly through the admin interface or via API to test the full pipeline.
+
+Supported formats: **WAV, FLAC, OGG, Opus** (soundfile + libsndfile).
+
+```bash
+curl -X POST http://localhost:8000/upload/A \
+  -F "file=@audio_samples/test_fr_16k.wav"
+```
+
+Response:
+```json
+{
+  "original": "Bonjour, comment allez-vous ?",
+  "translated": "Hello, how are you?",
+  "src_lang": "French",
+  "tgt_lang": "English",
+  "ms": 294
+}
+```
+
+The result is also broadcast to all connected display clients via WebSocket, exactly like a live microphone input.
 
 ## Tech Stack
 
@@ -149,13 +210,12 @@ lingua_display/
 │       ├── decoder_model.onnx
 │       ├── decoder_with_past_model.onnx
 │       └── sentencepiece.bpe.model
+├── fonts/                             # Custom fonts uploaded via admin (auto-created)
 ├── translation_cache.json             # Persistent translation cache (auto-generated)
 ├── hardware_comparison.csv            # Comparatif SOC / cartes principales
 ├── hardware_microphones.csv           # Comparatif micros beamforming
 ├── hardware_screens.csv               # Comparatif écrans 12" tactiles
-├── audio_samples/                     # WAV test files (16kHz mono)
-│   ├── test_fr_16k.wav
-│   └── test_fr_complexe.wav
+├── audio_samples/                     # WAV test files for pipeline testing (16kHz mono)
 └── src/
     ├── export_nllb_onnx.py            # One-time ONNX export script
     ├── test_vad.py                    # Silero VAD isolated test
@@ -216,7 +276,7 @@ pip install faster-whisper
 pip install optimum[onnxruntime] transformers sentencepiece onnxruntime-gpu
 
 # Web server
-pip install fastapi uvicorn websockets
+pip install fastapi uvicorn websockets python-multipart
 ```
 
 ### 4. Export NLLB model (once, ~2GB download, ~10-20 min)
@@ -250,6 +310,8 @@ python3 src/server.py
 | http://localhost:8000/side/B | Side B plein écran |
 | http://localhost:8000/admin | Backoffice / logs en temps réel |
 
+> The server starts normally even without USB microphones connected — the audio pipeline is disabled with a warning and the rest of the interface (upload, config, WebSocket) remains fully functional.
+
 ## Microphone Setup
 
 Le serveur détecte automatiquement les deux micros USB PnP à chaque démarrage par leur nom — aucune configuration manuelle d'index nécessaire.
@@ -278,8 +340,16 @@ Pour améliorer la précision sur du vocabulaire spécifique, enrichir `initial_
 Interface de supervision en temps réel :
 - **Log live** — chaque traduction avec heure, side, langues, latence, indicateur cache
 - **Statistiques** — total, taux de cache hits, compteurs par side, latence moyenne
-- **Contrôles** — Pause (fige l'affichage sans perdre les entrées) et Effacer
+- **Contrôles** — Pause (fige l'affichage sans perdre les entrées), Effacer, Refresh, Restart
 - **Replay** — les 200 derniers événements sont renvoyés à la connexion
+- **Test audio** — upload d'un fichier audio (WAV/FLAC/OGG/Opus) sur side A ou B pour tester le pipeline sans micro
+- **Affichage** — réglage en temps réel du fond, couleur texte, taille, nombre de phrases, police, upload de polices custom
+
+## Display Controls (kiosk pages)
+
+Deux boutons discrets apparaissent en bas à droite de chaque page d'affichage au survol :
+- **Refresh** — recharge la page en contournant le cache navigateur
+- **Restart** — redémarre le processus serveur (confirmation requise) ; la page se recharge automatiquement une fois le serveur de nouveau disponible
 
 ## Validated Performance (Ubuntu 25.04, RTX 5070 Ti)
 
@@ -379,6 +449,7 @@ Les traductions sont cachées dans `translation_cache.json` (racine du projet) e
 | Thread pipeline crashe silencieusement | Exception non catchée dans worker | Pas de relance automatique — watchdog systemd à implémenter |
 | Cache JSON corrompu | Arrêt brutal pendant écriture | Sauvegarde atomique à implémenter (write tmp + rename) |
 | `/admin` accessible sans auth | Pas d'authentification | Ajouter HTTP Basic Auth ou restreindre par IP |
+| Config affichage perdue au restart | Pas de persistance disque | À implémenter (display_config.json) |
 
 ## Roadmap
 
@@ -398,6 +469,12 @@ Les traductions sont cachées dans `translation_cache.json` (racine du projet) e
 - [x] Backoffice admin live logs `/admin` — implémenté
 - [x] Prévention veille écran et système — implémenté
 - [x] Thème fond noir texte blanc — implémenté
+- [x] Upload audio pour test pipeline sans micro (`/upload/{side}`) — implémenté
+- [x] Configuration affichage en temps réel depuis admin (couleur, taille, police, nb phrases) — implémentée
+- [x] Upload de polices custom depuis admin — implémenté
+- [x] Boutons Refresh / Restart sur les pages kiosk et admin — implémentés
+- [x] Démarrage serveur sans micros (pipeline désactivé gracieusement) — implémenté
+- [ ] Persistance de la config affichage entre redémarrages
 - [ ] Déploiement Radxa Rock 5B (Debian ARM64)
 - [ ] Optimisation Whisper RKNN SDK (NPU) via sherpa-onnx
 - [ ] Optimisation NLLB RKNN SDK

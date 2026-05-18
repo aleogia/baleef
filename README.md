@@ -70,6 +70,7 @@ cog http://localhost:8000/side/A
 | POST | `/config/display` | Update display configuration (JSON body) |
 | POST | `/upload/{A\|B}` | Upload an audio file and run through the pipeline |
 | POST | `/upload/font` | Upload a custom font file (TTF/OTF/WOFF/WOFF2) |
+| POST | `/upload/glossary?src_lang=fr&tgt_lang=eng_Latn` | Import a glossary (CSV/TSV) into the translation cache |
 | POST | `/restart` | Restart the server process |
 | WS | `/ws/{A\|B}` | Translation feed for side A or B |
 | WS | `/ws/admin` | Admin log feed |
@@ -94,6 +95,64 @@ curl -X POST http://localhost:8000/config/display \
   -H "Content-Type: application/json" \
   -d '{"bg_color": "#1a1a2e", "font_size": 48}'
 ```
+
+## Glossary Import
+
+Domain-specific phrases, acronyms, and proper nouns can be pre-loaded via a glossary file. Each entry has two effects:
+
+1. **Translation cache** — injected directly, so an exact match during live translation returns instantly (O(1), no NLLB inference)
+2. **Whisper prompt enrichment** — source terms are appended to `initial_prompt` for side A, improving STT recognition of uncommon words and acronyms
+
+### File formats
+
+**2-column CSV/TSV** — uses the language pair selected in the admin UI:
+```csv
+# optional comment
+source,traduction
+ONU,UN
+SNCF,French national railway
+TVA,VAT
+RGPD,GDPR
+PDG,CEO
+```
+
+**4-column CSV/TSV** — language pair specified per row:
+```csv
+source,src_lang,tgt_lang,traduction
+ONU,fr,eng_Latn,UN
+hello,en,fra_Latn,bonjour
+```
+
+Rules:
+- Lines starting with `#` are ignored
+- First row is auto-detected as header if it starts with `source`, `terme`, `phrase`, `mot`, etc.
+- Delimiter auto-detected (comma, semicolon, tab)
+- UTF-8 with BOM supported (Excel exports)
+
+### Via API
+
+```bash
+curl -X POST "http://localhost:8000/upload/glossary?src_lang=fr&tgt_lang=eng_Latn" \
+  -F "file=@glossary.csv"
+```
+
+Response:
+```json
+{
+  "added": 6,
+  "skipped": 0,
+  "sample": [
+    {"source": "ONU", "translation": "UN"},
+    {"source": "TVA", "translation": "VAT"}
+  ]
+}
+```
+
+### Via admin
+
+The **Glossaire** bar in `/admin` provides source/target language selectors and a file picker. Results (count + example entry) are shown inline after import.
+
+> Note: glossary entries are held in memory and in `translation_cache.json`. They are lost if the cache file is deleted. Whisper prompt hints reset on server restart (re-import the glossary to restore them).
 
 ## Audio Upload (Remote Testing)
 
@@ -344,6 +403,7 @@ Interface de supervision en temps réel :
 - **Replay** — les 200 derniers événements sont renvoyés à la connexion
 - **Test audio** — upload d'un fichier audio (WAV/FLAC/OGG/Opus) sur side A ou B pour tester le pipeline sans micro
 - **Affichage** — réglage en temps réel du fond, couleur texte, taille, nombre de phrases, police, upload de polices custom
+- **Glossaire** — import CSV/TSV de phrases et acronymes ; injecte le cache et enrichit le prompt Whisper
 
 ## Display Controls (kiosk pages)
 
@@ -470,6 +530,7 @@ Les traductions sont cachées dans `translation_cache.json` (racine du projet) e
 - [x] Prévention veille écran et système — implémenté
 - [x] Thème fond noir texte blanc — implémenté
 - [x] Upload audio pour test pipeline sans micro (`/upload/{side}`) — implémenté
+- [x] Import glossaire CSV/TSV (cache + prompt Whisper) — implémenté
 - [x] Configuration affichage en temps réel depuis admin (couleur, taille, police, nb phrases) — implémentée
 - [x] Upload de polices custom depuis admin — implémenté
 - [x] Boutons Refresh / Restart sur les pages kiosk et admin — implémentés

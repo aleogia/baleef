@@ -1,5 +1,6 @@
 """Web interface — FastAPI + WebSocket, dual-sided real-time translation kiosk."""
 import asyncio
+import csv
 import io
 import json
 import os
@@ -187,11 +188,11 @@ def translate(text: str, src_nllb: str, tgt_nllb: str) -> tuple[str, bool]:
         if key in _cache:
             return _cache[key], True
 
-    tokenizer.src_lang = src_nllb
-    inputs = tokenizer(text, return_tensors="pt")
-    inputs = {k: v.to(nmt_model.device) for k, v in inputs.items()}
-    tgt_id = tokenizer.convert_tokens_to_ids(tgt_nllb)
     with _infer_lock:
+        tokenizer.src_lang = src_nllb
+        inputs = tokenizer(text, return_tensors="pt")
+        inputs = {k: v.to(nmt_model.device) for k, v in inputs.items()}
+        tgt_id = tokenizer.convert_tokens_to_ids(tgt_nllb)
         out = nmt_model.generate(**inputs, forced_bos_token_id=tgt_id)
     result = tokenizer.batch_decode(out, skip_special_tokens=True)[0]
 
@@ -289,7 +290,10 @@ def pipeline_worker(side: str, mic_device: int, sample_rate: int = 48000, channe
                     continue
                 chunk = speech_buffer
                 speech_buffer = np.array([], dtype=np.float32)
-                _run_audio_inference(chunk, side, fixed_src_lang)
+                try:
+                    _run_audio_inference(chunk, side, fixed_src_lang)
+                except Exception as exc:
+                    print(f"[side {side}] inference error: {exc}")
 
 
 # ── HTML UI ───────────────────────────────────────────────────────────────────
@@ -384,11 +388,12 @@ HTML = """<!DOCTYPE html>
       animation: slideUp 0.3s ease;
     }
     .feed-item:first-child { border-top: none; }
-    /* Oldest → newest opacity */
-    .feed-item:nth-child(1) { opacity: 0.2; }
-    .feed-item:nth-child(2) { opacity: 0.4; }
-    .feed-item:nth-child(3) { opacity: 0.7; }
-    .feed-item:nth-child(4) { opacity: 1; }
+    /* Newest item always full opacity, older items progressively dimmed */
+    .feed-item { opacity: 0.15; }
+    .feed-item:nth-last-child(4) { opacity: 0.2; }
+    .feed-item:nth-last-child(3) { opacity: 0.4; }
+    .feed-item:nth-last-child(2) { opacity: 0.7; }
+    .feed-item:nth-last-child(1) { opacity: 1; }
     .feed-item .f-translated {
       font-size: var(--font-size);
       font-weight: 300;
@@ -609,10 +614,11 @@ def make_single_side_html(side: str) -> str:
       animation: slideUp 0.3s ease;
     }}
     .feed-item:first-child {{ border-top: none; }}
-    .feed-item:nth-child(1) {{ opacity: 0.2; }}
-    .feed-item:nth-child(2) {{ opacity: 0.4; }}
-    .feed-item:nth-child(3) {{ opacity: 0.7; }}
-    .feed-item:nth-child(4) {{ opacity: 1; }}
+    .feed-item {{ opacity: 0.15; }}
+    .feed-item:nth-last-child(4) {{ opacity: 0.2; }}
+    .feed-item:nth-last-child(3) {{ opacity: 0.4; }}
+    .feed-item:nth-last-child(2) {{ opacity: 0.7; }}
+    .feed-item:nth-last-child(1) {{ opacity: 1; }}
     .feed-item .f-translated {{
       font-size: var(--font-size); font-weight: 300;
       line-height: 1.35; word-break: break-word;
@@ -1199,10 +1205,15 @@ async def get_display_config():
 
 @app.post("/config/display")
 async def set_display_config(body: dict):
-    allowed = {"bg_color", "text_color", "font_size", "max_phrases", "font_family"}
+    global MAX_RECENT
     for k, v in body.items():
-        if k in allowed:
-            display_config[k] = v
+        if k == "font_size":
+            display_config[k] = max(10, min(120, int(v)))
+        elif k == "max_phrases":
+            display_config[k] = max(1, min(20, int(v)))
+            MAX_RECENT = display_config[k]
+        elif k in {"bg_color", "text_color", "font_family"}:
+            display_config[k] = str(v)
     await _broadcast_config_ws()
     return JSONResponse(display_config)
 
@@ -1241,8 +1252,6 @@ async def upload_glossary(file: UploadFile = File(...), src_lang: str = "fr", tg
     Lines starting with # are comments. First row may be a header.
     """
     global _cache_dirty
-    import csv
-
     raw = (await file.read()).decode("utf-8-sig", errors="replace")
     filename = file.filename or ""
 
@@ -1315,7 +1324,7 @@ async def upload_audio(side: str, file: UploadFile = File(...)):
         audio = resampy.resample(audio, sr, 16000)
 
     fixed = "fr" if side == "A" else None
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, _run_audio_inference, audio, side, fixed)
 
     if result is None:

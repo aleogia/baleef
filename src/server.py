@@ -94,6 +94,9 @@ display_config: Dict = {
 }
 config_clients: Set[WebSocket] = set()
 
+# Source terms from imported glossaries — injected into Whisper initial_prompt
+vocab_hints: list[str] = []
+
 ws_clients: Dict[str, Set[WebSocket]] = {"A": set(), "B": set()}
 broadcast_queues: Dict[str, asyncio.Queue] = {}
 recent_messages: Dict[str, list] = {"A": [], "B": []}  # last 4 per side
@@ -202,7 +205,11 @@ def _run_audio_inference(audio_16k: np.ndarray, side: str, fixed_src_lang: str |
     """Denoise → Whisper → NLLB → broadcast. Returns result dict, or None if no speech detected."""
     audio_16k = nr.reduce_noise(y=audio_16k, sr=16000, stationary=False)
     t0 = time.time()
-    prompt = "Conversation en français." if fixed_src_lang == "fr" else None
+    if fixed_src_lang == "fr":
+        hints = ", ".join(vocab_hints[:20])
+        prompt = "Conversation en français." + (f" {hints}." if hints else "")
+    else:
+        prompt = None
     with _infer_lock:
         segments, info = whisper_model.transcribe(
             audio_16k, beam_size=2,
@@ -841,6 +848,25 @@ ADMIN_HTML = """<!DOCTYPE html>
     }
     #font-upload-btn:hover { color: #aaa; }
     #font-status { font-size: 11px; color: #22c55e; }
+
+    /* ── Glossary ── */
+    #glossary-bar {
+      background: #070707; border-bottom: 1px solid #161616;
+      padding: 8px 24px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    }
+    #gls-src, #gls-tgt {
+      background: #1a1a1a; color: #aaa; border: 1px solid #2a2a2a;
+      border-radius: 4px; padding: 3px 8px; font-size: 12px; cursor: pointer;
+    }
+    #gls-import-btn {
+      background: #1a1a1a; color: #666; border: 1px solid #2a2a2a;
+      padding: 4px 12px; border-radius: 5px; font-size: 12px; cursor: pointer;
+    }
+    #gls-import-btn:hover { color: #aaa; }
+    #gls-status { font-size: 12px; }
+    #gls-status.ok { color: #22c55e; }
+    #gls-status.err { color: #f87171; }
+    .gls-hint { font-size: 10px; color: #2a2a2a; font-style: italic; }
   </style>
 </head>
 <body>
@@ -891,6 +917,46 @@ ADMIN_HTML = """<!DOCTYPE html>
       <button id="font-upload-btn" onclick="document.getElementById('font-file').click()">+ Police</button>
       <span id="font-status"></span>
     </div>
+  </div>
+
+  <div id="glossary-bar">
+    <span class="bar-label">Glossaire</span>
+    <div class="ctrl-grp">
+      <label>Source</label>
+      <select id="gls-src">
+        <option value="fr">Français</option>
+        <option value="en">English</option>
+        <option value="es">Español</option>
+        <option value="de">Deutsch</option>
+        <option value="ar">العربية</option>
+        <option value="zh">中文</option>
+        <option value="ja">日本語</option>
+        <option value="pt">Português</option>
+        <option value="ru">Русский</option>
+        <option value="it">Italiano</option>
+        <option value="hi">हिन्दी</option>
+      </select>
+    </div>
+    <div class="ctrl-grp">
+      <label>Traduction vers</label>
+      <select id="gls-tgt">
+        <option value="eng_Latn">English</option>
+        <option value="fra_Latn">Français</option>
+        <option value="spa_Latn">Español</option>
+        <option value="deu_Latn">Deutsch</option>
+        <option value="arb_Arab">العربية</option>
+        <option value="zho_Hans">中文</option>
+        <option value="jpn_Jpan">日本語</option>
+        <option value="por_Latn">Português</option>
+        <option value="rus_Cyrl">Русский</option>
+        <option value="ita_Latn">Italiano</option>
+        <option value="hin_Deva">हिन्दी</option>
+      </select>
+    </div>
+    <input type="file" id="gls-file" accept=".csv,.tsv,.txt" style="display:none" onchange="importGlossary(this)">
+    <button id="gls-import-btn" onclick="document.getElementById('gls-file').click()">Importer CSV / TSV</button>
+    <span id="gls-status"></span>
+    <span class="gls-hint">2 col : source, traduction — 4 col : source, src_lang, tgt_lang, traduction — # = commentaire</span>
   </div>
 
   <div id="upload-bar">
@@ -965,6 +1031,29 @@ ADMIN_HTML = """<!DOCTYPE html>
 
       // Keep max 500 rows in DOM
       while (log.children.length > 500) log.removeChild(log.firstChild);
+    }
+
+    async function importGlossary(input) {
+      const file = input.files[0];
+      if (!file) return;
+      const status = document.getElementById('gls-status');
+      const src = document.getElementById('gls-src').value;
+      const tgt = document.getElementById('gls-tgt').value;
+      status.textContent = 'Import…'; status.className = '';
+      const fd = new FormData();
+      fd.append('file', file);
+      const r = await fetch('/upload/glossary?src_lang=' + src + '&tgt_lang=' + tgt, { method: 'POST', body: fd });
+      const d = await r.json();
+      if (d.added !== undefined) {
+        let msg = '✓ ' + d.added + ' entrée' + (d.added > 1 ? 's' : '') + ' ajoutée' + (d.added > 1 ? 's' : '');
+        if (d.skipped) msg += ' · ' + d.skipped + ' ignorée' + (d.skipped > 1 ? 's' : '');
+        if (d.sample && d.sample.length)
+          msg += ' — ex : "' + esc(d.sample[0].source) + '" → "' + esc(d.sample[0].translation) + '"';
+        status.textContent = msg; status.className = 'ok';
+      } else {
+        status.textContent = d.detail || 'Erreur'; status.className = 'err';
+      }
+      input.value = '';
     }
 
     async function pushConfig(key, value) {
@@ -1141,6 +1230,70 @@ async def ws_config(websocket: WebSocket):
             await websocket.receive()
     except (WebSocketDisconnect, Exception):
         config_clients.discard(websocket)
+
+
+@app.post("/upload/glossary")
+async def upload_glossary(file: UploadFile = File(...), src_lang: str = "fr", tgt_lang: str = "eng_Latn"):
+    """Import a CSV/TSV glossary into the translation cache.
+
+    2-column format : source, translation
+    4-column format : source, src_lang_whisper, tgt_lang_nllb, translation
+    Lines starting with # are comments. First row may be a header.
+    """
+    global _cache_dirty
+    import csv
+
+    raw = (await file.read()).decode("utf-8-sig", errors="replace")
+    filename = file.filename or ""
+
+    # Detect delimiter
+    try:
+        dialect = csv.Sniffer().sniff(raw[:4096], delimiters=",;\t")
+    except csv.Error:
+        dialect = csv.excel
+
+    src_nllb_default = NLLB_LANG_MAP.get(src_lang, "fra_Latn")
+    added, skipped, samples = 0, 0, []
+    first_data_row = True
+
+    for row in csv.reader(io.StringIO(raw), dialect=dialect):
+        row = [c.strip() for c in row]
+        if not row or row[0].startswith("#"):
+            continue
+        if first_data_row:
+            first_data_row = False
+            if row[0].lower() in ("source", "src", "phrase", "terme", "term", "mot"):
+                continue  # skip header
+
+        if len(row) >= 4:
+            src_text, r_src, r_tgt, translation = row[0], row[1], row[2], row[3]
+            src_nllb = NLLB_LANG_MAP.get(r_src, src_nllb_default)
+            tgt_nllb = r_tgt if r_tgt in LANG_NAMES else tgt_lang
+        elif len(row) == 2:
+            src_text, translation = row[0], row[1]
+            src_nllb, tgt_nllb = src_nllb_default, tgt_lang
+        else:
+            skipped += 1
+            continue
+
+        if not src_text or not translation:
+            skipped += 1
+            continue
+
+        key = _cache_key(_normalize(src_text), src_nllb, tgt_nllb)
+        with _cache_lock:
+            _cache[key] = translation
+            _cache_dirty = True
+
+        if src_text not in vocab_hints:
+            vocab_hints.append(src_text)
+
+        if len(samples) < 5:
+            samples.append({"source": src_text, "translation": translation})
+        added += 1
+
+    log_event("glossary", added=added, skipped=skipped, file=filename)
+    return JSONResponse({"added": added, "skipped": skipped, "sample": samples})
 
 
 @app.post("/upload/{side}")

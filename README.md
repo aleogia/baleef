@@ -527,6 +527,7 @@ Cache keys are `src_nllb|tgt_nllb|normalize(text)`. Normalisation lowercases, st
 | `/admin` accessible sans auth | Pas d'authentification | Ajouter HTTP Basic Auth ou restreindre par IP |
 | Config affichage perdue au restart | Pas de persistance disque | À implémenter (display_config.json) |
 | Vocab hints perdus au restart | vocab_hints en mémoire seulement | Re-importer le glossaire après redémarrage |
+| `POST /restart` recharge l'ancien code si des fichiers ont été modifiés pendant l'exécution | `os.execv` relit le fichier sur disque à l'instant du restart | Éditer les fichiers puis déclencher le restart |
 
 ## Roadmap
 
@@ -549,6 +550,8 @@ Cache keys are `src_nllb|tgt_nllb|normalize(text)`. Normalisation lowercases, st
 - [x] Upload audio pour test pipeline sans micro (`/upload/{side}`) — implémenté
 - [x] Import glossaire CSV/TSV (cache + prompt Whisper) — implémenté
 - [x] Audit bugs : race condition tokenizer, opacités feed, validation config, robustesse pipeline — corrigé
+- [x] SyntaxWarning regex JS dans strings Python (`\.` → `\\.`) — corrigé
+- [x] Dépréciation `@app.on_event` → lifespan FastAPI — migré
 - [x] Configuration affichage en temps réel depuis admin (couleur, taille, police, nb phrases) — implémentée
 - [x] Upload de polices custom depuis admin — implémenté
 - [x] Boutons Refresh / Restart sur les pages kiosk et admin — implémentés

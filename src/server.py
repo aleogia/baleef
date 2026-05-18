@@ -2,6 +2,7 @@
 import asyncio
 import csv
 import io
+from contextlib import asynccontextmanager
 import json
 import os
 import queue
@@ -82,7 +83,30 @@ print("[init] Ready.\n")
 FONTS_DIR = os.path.join(os.path.dirname(__file__), "..", "fonts")
 os.makedirs(FONTS_DIR, exist_ok=True)
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app_: FastAPI):
+    global event_loop, DEVICE_A, DEVICE_B
+    for cmd in ["xset s off", "xset -dpms", "xset s noblank"]:
+        subprocess.run(cmd.split(), check=False)
+    event_loop = asyncio.get_event_loop()
+    broadcast_queues["A"] = asyncio.Queue()
+    broadcast_queues["B"] = asyncio.Queue()
+    asyncio.create_task(broadcast_worker("A"))
+    asyncio.create_task(broadcast_worker("B"))
+    _load_cache()
+    threading.Thread(target=_cache_saver, daemon=True).start()
+    try:
+        DEVICE_A, DEVICE_B = find_usb_mics()
+        threading.Thread(target=pipeline_worker, args=("A", DEVICE_A, USB_MIC_SAMPLERATE, 1, "fr"), daemon=True).start()
+        threading.Thread(target=pipeline_worker, args=("B", DEVICE_B, USB_MIC_SAMPLERATE, 1), daemon=True).start()
+    except RuntimeError as e:
+        print(f"[init] WARNING: mic pipeline disabled — {e}")
+    yield
+    _save_cache()
+
+
+app = FastAPI(lifespan=lifespan)
 app.mount("/fonts", StaticFiles(directory=FONTS_DIR), name="fonts")
 
 display_config: Dict = {
@@ -478,7 +502,7 @@ HTML = """<!DOCTYPE html>
       }
       if (cfg.custom_fonts) cfg.custom_fonts.forEach(fn => {
         if (document.querySelector('[data-font="' + fn + '"]')) return;
-        const nm = fn.replace(/\.[^.]+$/, '').replace(/_/g, ' ');
+        const nm = fn.replace(/\\.[^.]+$/, '').replace(/_/g, ' ');
         const st = document.createElement('style');
         st.setAttribute('data-font', fn);
         st.textContent = "@font-face{font-family:'" + nm + "';src:url('/fonts/" + fn + "')}";
@@ -666,7 +690,7 @@ def make_single_side_html(side: str) -> str:
       }}
       if (cfg.custom_fonts) cfg.custom_fonts.forEach(fn => {{
         if (document.querySelector('[data-font="' + fn + '"]')) return;
-        const nm = fn.replace(/\.[^.]+$/, '').replace(/_/g, ' ');
+        const nm = fn.replace(/\\.[^.]+$/, '').replace(/_/g, ' ');
         const st = document.createElement('style');
         st.setAttribute('data-font', fn);
         st.textContent = "@font-face{{font-family:'" + nm + "';src:url('/fonts/" + fn + "')}}";
@@ -1099,7 +1123,7 @@ ADMIN_HTML = """<!DOCTYPE html>
       document.getElementById('cfg-phrases').value = cfg.max_phrases;
       const sel = document.getElementById('cfg-font');
       (cfg.custom_fonts || []).forEach(fn => {
-        const nm = fn.replace(/\.[^.]+$/, '').replace(/_/g, ' ');
+        const nm = fn.replace(/\\.[^.]+$/, '').replace(/_/g, ' ');
         const opt = document.createElement('option');
         opt.value = "'" + nm + "', sans-serif"; opt.textContent = nm + ' ✓';
         sel.appendChild(opt);
@@ -1399,28 +1423,5 @@ def find_usb_mics() -> tuple[int, int]:
     return usb_devices[0], usb_devices[1]
 
 
-@app.on_event("startup")
-async def startup():
-    global event_loop, DEVICE_A, DEVICE_B
-    for cmd in ["xset s off", "xset -dpms", "xset s noblank"]:
-        subprocess.run(cmd.split(), check=False)
-    event_loop = asyncio.get_event_loop()
-    broadcast_queues["A"] = asyncio.Queue()
-    broadcast_queues["B"] = asyncio.Queue()
-    asyncio.create_task(broadcast_worker("A"))
-    asyncio.create_task(broadcast_worker("B"))
-    _load_cache()
-    threading.Thread(target=_cache_saver, daemon=True).start()
-    try:
-        DEVICE_A, DEVICE_B = find_usb_mics()
-        threading.Thread(target=pipeline_worker, args=("A", DEVICE_A, USB_MIC_SAMPLERATE, 1, "fr"), daemon=True).start()
-        threading.Thread(target=pipeline_worker, args=("B", DEVICE_B, USB_MIC_SAMPLERATE, 1), daemon=True).start()
-    except RuntimeError as e:
-        print(f"[init] WARNING: mic pipeline disabled — {e}")
-
-
 if __name__ == "__main__":
-    try:
-        uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
-    finally:
-        _save_cache()
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)

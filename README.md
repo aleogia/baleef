@@ -494,6 +494,22 @@ Les traductions sont cachées dans `translation_cache.json` (racine du projet) e
 
 **Si besoin** : LRU eviction ou remplacement du JSON par SQLite (lectures/écritures unitaires).
 
+## Architecture Notes
+
+### Thread safety
+All GPU inference (VAD, Whisper, NLLB tokenizer + generate) runs under a single `_infer_lock`. This prevents CUDA context corruption when the two mic pipeline threads and the audio upload endpoint compete for the GPU. The tokenizer's `src_lang` attribute is mutable shared state — it is set and consumed inside the lock to avoid a race condition where two concurrent translations could silently swap each other's source language.
+
+### Broadcast model
+Three independent WebSocket channels coexist:
+- `/ws/{A|B}` — translation feed, one per side
+- `/ws/admin` — structured log events (translation, glossary, connection)
+- `/ws/config` — display configuration updates
+
+All heavy work happens in daemon threads or executor threads; results are pushed to the async event loop via `asyncio.run_coroutine_threadsafe` (threads) or `loop.run_in_executor` (async routes calling blocking code).
+
+### Translation cache
+Cache keys are `src_nllb|tgt_nllb|normalize(text)`. Normalisation lowercases, strips punctuation and applies Unicode NFC — so "Bonjour !" and "bonjour" share the same entry. The cache is written to disk every 30 s in a background thread and on clean shutdown. Glossary entries inject directly into the same cache with the same key format.
+
 ## Known Issues & Workarounds
 
 | Issue | Cause | Workaround |
@@ -510,6 +526,7 @@ Les traductions sont cachées dans `translation_cache.json` (racine du projet) e
 | Cache JSON corrompu | Arrêt brutal pendant écriture | Sauvegarde atomique à implémenter (write tmp + rename) |
 | `/admin` accessible sans auth | Pas d'authentification | Ajouter HTTP Basic Auth ou restreindre par IP |
 | Config affichage perdue au restart | Pas de persistance disque | À implémenter (display_config.json) |
+| Vocab hints perdus au restart | vocab_hints en mémoire seulement | Re-importer le glossaire après redémarrage |
 
 ## Roadmap
 
@@ -531,6 +548,7 @@ Les traductions sont cachées dans `translation_cache.json` (racine du projet) e
 - [x] Thème fond noir texte blanc — implémenté
 - [x] Upload audio pour test pipeline sans micro (`/upload/{side}`) — implémenté
 - [x] Import glossaire CSV/TSV (cache + prompt Whisper) — implémenté
+- [x] Audit bugs : race condition tokenizer, opacités feed, validation config, robustesse pipeline — corrigé
 - [x] Configuration affichage en temps réel depuis admin (couleur, taille, police, nb phrases) — implémentée
 - [x] Upload de polices custom depuis admin — implémenté
 - [x] Boutons Refresh / Restart sur les pages kiosk et admin — implémentés

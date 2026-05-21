@@ -26,7 +26,7 @@ def _run_audio_inference(audio_16k: np.ndarray, side: str, fixed_src_lang: str |
             initial_prompt=prompt,
             condition_on_previous_text=False,
         )
-    transcript = " ".join(s.text for s in segments).strip()
+        transcript = " ".join(s.text for s in segments).strip()
     if not transcript:
         return None
 

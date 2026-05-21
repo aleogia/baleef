@@ -8,7 +8,6 @@ import sys
 import threading
 import time
 
-import numpy as np
 import resampy
 import soundfile as sf
 from fastapi import APIRouter, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -17,7 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 import state
 from cache import add_entry, vocab_hints
 from config import FONTS_DIR, LANG_NAMES, NLLB_LANG_MAP, TARGET_LANG
-from html import ADMIN_HTML, HTML, make_single_side_html
+from views import ADMIN_HTML, HTML, make_single_side_html
 from inference import _run_audio_inference
 
 router = APIRouter()

@@ -29,7 +29,7 @@ async def index():
 
 @router.get("/side/{side}", response_class=HTMLResponse)
 async def side_view(side: str):
-    if side not in ("A", "B"):
+    if side != "A":
         raise HTTPException(status_code=404)
     return make_single_side_html(side)
 
@@ -168,7 +168,7 @@ async def upload_glossary(file: UploadFile = File(...), src_lang: str = "fr", tg
 @router.post("/upload/{side}")
 async def upload_audio(side: str, file: UploadFile = File(...)):
     """Upload an audio file and run it through the full pipeline for the given side."""
-    if side not in ("A", "B"):
+    if side != "A":
         raise HTTPException(status_code=404)
 
     data = await file.read()
@@ -194,10 +194,8 @@ async def upload_audio(side: str, file: UploadFile = File(...)):
 
 @router.post("/lang/{side}")
 async def set_language(side: str, code: str):
-    if side not in ("A", "B"):
+    if side != "A":
         raise HTTPException(status_code=404)
-    if side == "B":
-        raise HTTPException(status_code=403, detail="Side B language is fixed to French.")
     if code not in LANG_NAMES:
         raise HTTPException(status_code=400, detail=f"Unknown language code: {code}")
     TARGET_LANG[side] = code
@@ -207,7 +205,7 @@ async def set_language(side: str, code: str):
 
 @router.websocket("/ws/{side}")
 async def ws_endpoint(websocket: WebSocket, side: str):
-    if side not in ("A", "B"):
+    if side != "A":
         await websocket.close(code=1008)
         return
     await websocket.accept()

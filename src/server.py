@@ -12,8 +12,8 @@ from fastapi.staticfiles import StaticFiles
 
 import state
 from cache import _cache_saver, _load_cache, _save_cache
-from config import FONTS_DIR, USB_MIC_SAMPLERATE
-from pipeline import find_usb_mics, pipeline_worker
+from config import FONTS_DIR, LOOPBACK_SAMPLERATE
+from pipeline import find_loopback_device, pipeline_worker
 from routes import router
 
 
@@ -23,17 +23,14 @@ async def lifespan(app_: FastAPI):
         subprocess.run(cmd.split(), check=False)
     state.event_loop = asyncio.get_event_loop()
     state.broadcast_queues["A"] = asyncio.Queue()
-    state.broadcast_queues["B"] = asyncio.Queue()
     asyncio.create_task(state.broadcast_worker("A"))
-    asyncio.create_task(state.broadcast_worker("B"))
     _load_cache()
     threading.Thread(target=_cache_saver, daemon=True).start()
     try:
-        device_a, device_b = find_usb_mics()
-        threading.Thread(target=pipeline_worker, args=("A", device_a, USB_MIC_SAMPLERATE, 1, "fr"), daemon=True).start()
-        threading.Thread(target=pipeline_worker, args=("B", device_b, USB_MIC_SAMPLERATE, 1), daemon=True).start()
+        device = find_loopback_device()
+        threading.Thread(target=pipeline_worker, args=("A", device, LOOPBACK_SAMPLERATE, 2), daemon=True).start()
     except RuntimeError as e:
-        print(f"[init] WARNING: mic pipeline disabled — {e}")
+        print(f"[init] WARNING: loopback pipeline disabled — {e}")
     yield
     _save_cache()
 
@@ -44,4 +41,4 @@ app.mount("/fonts", StaticFiles(directory=FONTS_DIR), name="fonts")
 app.include_router(router)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=8001, reload=False)

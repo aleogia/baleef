@@ -1,19 +1,18 @@
 import threading
 
+import ctranslate2
 import torch
 from faster_whisper import WhisperModel
-from optimum.onnxruntime import ORTModelForSeq2SeqLM
 from transformers import AutoTokenizer
 
-from config import MODEL_DIR
+from config import CT2_MODEL_DIR, MODEL_DIR
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-provider = "CUDAExecutionProvider" if device == "cuda" else "CPUExecutionProvider"
 print(f"[init] device={device}")
 
-print("[init] Loading Whisper medium...")
+print("[init] Loading Whisper large-v3...")
 whisper_model = WhisperModel(
-    "medium", device=device,
+    "large-v3", device=device,
     compute_type="float16" if device == "cuda" else "int8",
 )
 
@@ -25,7 +24,7 @@ get_speech_timestamps, _, _, _, _ = vad_utils
 
 print("[init] Loading NLLB-200...")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
-nmt_model = ORTModelForSeq2SeqLM.from_pretrained(MODEL_DIR, provider=provider, use_merged=False)
+nmt_model = ctranslate2.Translator(CT2_MODEL_DIR, device=device, compute_type="int8")
 print("[init] Ready.\n")
 
 # VAD, Whisper, and NLLB share the same CUDA context — serialize all GPU calls

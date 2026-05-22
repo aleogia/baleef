@@ -9,9 +9,9 @@ admin_log: list = []
 admin_clients: Set[WebSocket] = set()
 MAX_LOG = 200
 
-ws_clients: Dict[str, Set[WebSocket]] = {"A": set(), "B": set()}
+ws_clients: Dict[str, Set[WebSocket]] = {"A": set()}
 broadcast_queues: Dict[str, asyncio.Queue] = {}
-recent_messages: Dict[str, list] = {"A": [], "B": []}
+recent_messages: Dict[str, list] = {"A": []}
 event_loop: asyncio.AbstractEventLoop | None = None
 MAX_RECENT = 4
 

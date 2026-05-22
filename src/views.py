@@ -5,7 +5,7 @@ HTML = """<!DOCTYPE html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>lingua_display</title>
+  <title>baleef</title>
   <style>
     :root {
       --bg: #000000;
@@ -31,7 +31,6 @@ HTML = """<!DOCTYPE html>
       gap: 16px;
       min-width: 0;
     }
-    .side-a { border-right: 1px solid #1e1e1e; }
 
     /* ── Top bar ── */
     .topbar {
@@ -133,9 +132,9 @@ HTML = """<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <div class="side side-a">
+  <div class="side">
     <div class="topbar">
-      <div class="side-label">Side A</div>
+      <div class="side-label">baleef</div>
       <select class="lang-select" onchange="setLang('A', this.value)">
         <option value="fra_Latn">French</option>
         <option value="eng_Latn" selected>English</option>
@@ -152,15 +151,6 @@ HTML = """<!DOCTYPE html>
       <div class="dot" id="dotA"></div>
     </div>
     <div class="feed" id="feedA"></div>
-  </div>
-
-  <div class="side side-b">
-    <div class="topbar">
-      <div class="side-label">Side B</div>
-      <span class="lang-fixed">Français</span>
-      <div class="dot" id="dotB"></div>
-    </div>
-    <div class="feed" id="feedB"></div>
   </div>
 
   <script>
@@ -232,7 +222,6 @@ HTML = """<!DOCTYPE html>
     }
 
     connect('A');
-    connect('B');
     connectConfig();
 
     function hardRefresh() {
@@ -262,7 +251,7 @@ ADMIN_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>lingua_display — Admin</title>
+  <title>baleef — Admin</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #0f0f0f; color: #e0e0e0; font-family: 'Segoe UI', monospace, sans-serif; font-size: 13px; }
@@ -391,7 +380,7 @@ ADMIN_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <header>
-    <h1>lingua_display</h1>
+    <h1>baleef</h1>
     <div class="badge" id="status">connecting…</div>
     <div class="controls">
       <button onclick="clearLog()">Effacer</button>
@@ -695,7 +684,7 @@ def make_single_side_html(side: str) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>lingua_display — Side {side}</title>
+  <title>baleef — Side {side}</title>
   <style>
     :root {{
       --bg: #000000;

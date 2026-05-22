@@ -10,21 +10,13 @@ from inference import _run_audio_inference
 from models import _infer_lock, get_speech_timestamps, vad_model
 
 
-def find_usb_mics() -> tuple[int, int]:
-    """Return (device_A, device_B) indices for the two USB PnP Audio Devices."""
-    usb_devices = [
-        i for i, d in enumerate(sd.query_devices())
-        if d["max_input_channels"] > 0
-        and ("USB PnP Audio Device" in d["name"] or "USB_PnP_Audio_Device" in d["name"])
-    ]
-    if len(usb_devices) < 2:
-        raise RuntimeError(
-            f"Expected 2 USB PnP Audio Devices, found {len(usb_devices)}: "
-            + str([sd.query_devices(i)["name"] for i in usb_devices])
-        )
-    print(f"[init] USB mics: A={usb_devices[0]} ({sd.query_devices(usb_devices[0])['name']}), "
-          f"B={usb_devices[1]} ({sd.query_devices(usb_devices[1])['name']})")
-    return usb_devices[0], usb_devices[1]
+def find_loopback_device() -> int:
+    """Return the index of the PipeWire loopback input device."""
+    for i, d in enumerate(sd.query_devices()):
+        if d["max_input_channels"] > 0 and d["name"] == "pipewire":
+            print(f"[init] Loopback device: {i} ({d['name']})")
+            return i
+    raise RuntimeError("PipeWire input device not found. Is PipeWire running?")
 
 
 def pipeline_worker(side: str, mic_device: int, sample_rate: int = 48000, channels: int = 1, fixed_src_lang: str | None = None):

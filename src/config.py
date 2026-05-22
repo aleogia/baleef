@@ -1,16 +1,14 @@
 import os
 
-DEVICE_A: int = -1
-DEVICE_B: int = -1
-USB_MIC_SAMPLERATE = 48000
+LOOPBACK_SAMPLERATE = 48000
 VAD_CHUNK_S = 0.4
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "models", "nllb-600M-onnx-int8")
+CT2_MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "models", "nllb-600M-ct2")
 CACHE_PATH = os.path.join(os.path.dirname(__file__), "..", "translation_cache.json")
 FONTS_DIR = os.path.join(os.path.dirname(__file__), "..", "fonts")
 
 TARGET_LANG: dict[str, str] = {
     "A": "eng_Latn",
-    "B": "fra_Latn",
 }
 
 NLLB_LANG_MAP = {

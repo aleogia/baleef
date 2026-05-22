@@ -63,11 +63,12 @@ def translate(text: str, src_nllb: str, tgt_nllb: str) -> tuple[str, bool]:
 
     with _infer_lock:
         tokenizer.src_lang = src_nllb
-        inputs = tokenizer(text, return_tensors="pt")
-        inputs = {k: v.to(nmt_model.device) for k, v in inputs.items()}
-        tgt_id = tokenizer.convert_tokens_to_ids(tgt_nllb)
-        out = nmt_model.generate(**inputs, forced_bos_token_id=tgt_id)
-    result = tokenizer.batch_decode(out, skip_special_tokens=True)[0]
+        tokens = tokenizer.convert_ids_to_tokens(tokenizer(text).input_ids)
+        output = nmt_model.translate_batch([tokens], target_prefix=[[tgt_nllb]], beam_size=4)
+    output_tokens = output[0].hypotheses[0]
+    if output_tokens and output_tokens[0] == tgt_nllb:
+        output_tokens = output_tokens[1:]
+    result = tokenizer.decode(tokenizer.convert_tokens_to_ids(output_tokens), skip_special_tokens=True)
 
     with _cache_lock:
         _cache[key] = result

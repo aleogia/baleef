@@ -5,7 +5,7 @@ import noisereduce as nr
 import numpy as np
 
 import state
-from cache import translate, vocab_hints
+from cache import translate
 from config import LANG_NAMES, NLLB_LANG_MAP, TARGET_LANG
 from models import _infer_lock, whisper_model
 
@@ -14,16 +14,10 @@ def _run_audio_inference(audio_16k: np.ndarray, side: str, fixed_src_lang: str |
     """Denoise → Whisper → NLLB → broadcast. Returns result dict, or None if no speech detected."""
     audio_16k = nr.reduce_noise(y=audio_16k, sr=16000, stationary=False)
     t0 = time.time()
-    if fixed_src_lang == "fr":
-        hints = ", ".join(vocab_hints[:20])
-        prompt = "Conversation en français." + (f" {hints}." if hints else "")
-    else:
-        prompt = None
     with _infer_lock:
         segments, info = whisper_model.transcribe(
             audio_16k, beam_size=2,
             language=fixed_src_lang,
-            initial_prompt=prompt,
             condition_on_previous_text=False,
         )
         transcript = " ".join(s.text for s in segments).strip()

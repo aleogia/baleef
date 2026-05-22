@@ -5,7 +5,7 @@ import resampy
 import sounddevice as sd
 import torch
 
-from config import VAD_CHUNK_S
+from config import VAD_CHUNK_S, VAD_MAX_PHRASE_S, VAD_SILENCE_CHUNKS
 from inference import _run_audio_inference
 from models import _infer_lock, get_speech_timestamps, vad_model
 
@@ -30,6 +30,8 @@ def pipeline_worker(side: str, mic_device: int, sample_rate: int = 48000, channe
     buffer = np.array([], dtype=np.float32)
     speech_buffer = np.array([], dtype=np.float32)
     in_speech = False
+    silence_count = 0
+    max_phrase_samples = int(VAD_MAX_PHRASE_S * 16000)
 
     with sd.InputStream(
         device=mic_device, channels=channels, samplerate=sample_rate,
@@ -55,14 +57,26 @@ def pipeline_worker(side: str, mic_device: int, sample_rate: int = 48000, channe
             if speech_ts:
                 speech_buffer = np.concatenate([speech_buffer, window])
                 in_speech = True
-            elif in_speech:
-                in_speech = False
-                if len(speech_buffer) < 16000:
+                silence_count = 0
+                if len(speech_buffer) >= max_phrase_samples:
+                    chunk = speech_buffer
                     speech_buffer = np.array([], dtype=np.float32)
-                    continue
-                chunk = speech_buffer
-                speech_buffer = np.array([], dtype=np.float32)
-                try:
-                    _run_audio_inference(chunk, side, fixed_src_lang)
-                except Exception as exc:
-                    print(f"[side {side}] inference error: {exc}")
+                    try:
+                        _run_audio_inference(chunk, side, fixed_src_lang)
+                    except Exception as exc:
+                        print(f"[side {side}] inference error: {exc}")
+            elif in_speech:
+                speech_buffer = np.concatenate([speech_buffer, window])
+                silence_count += 1
+                if silence_count >= VAD_SILENCE_CHUNKS:
+                    in_speech = False
+                    silence_count = 0
+                    if len(speech_buffer) < 16000:
+                        speech_buffer = np.array([], dtype=np.float32)
+                        continue
+                    chunk = speech_buffer
+                    speech_buffer = np.array([], dtype=np.float32)
+                    try:
+                        _run_audio_inference(chunk, side, fixed_src_lang)
+                    except Exception as exc:
+                        print(f"[side {side}] inference error: {exc}")

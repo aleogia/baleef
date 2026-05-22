@@ -212,6 +212,9 @@ HTML = """<!DOCTYPE html>
       const dot = document.getElementById('dot' + side);
       const ws  = new WebSocket('ws://' + location.host + '/ws/' + side);
 
+      ws.onopen = () => {
+        document.getElementById('feed' + side).innerHTML = '';
+      };
       ws.onmessage = e => {
         const d = JSON.parse(e.data);
         addItem(side, d);
@@ -816,6 +819,9 @@ def make_single_side_html(side: str) -> str:
     function connect() {{
       const dot = document.getElementById('dot{side}');
       const ws = new WebSocket('ws://' + location.host + '/ws/{side}');
+      ws.onopen = () => {{
+        document.getElementById('feed{side}').innerHTML = '';
+      }};
       ws.onmessage = e => {{
         addItem(JSON.parse(e.data));
         dot.classList.add('active');

@@ -2,6 +2,8 @@ import os
 
 LOOPBACK_SAMPLERATE = 48000
 VAD_CHUNK_S = 0.4
+VAD_SILENCE_CHUNKS = 3   # 3 × 0.4s = 1.2s de silence pour terminer une phrase
+VAD_MAX_PHRASE_S = 8     # durée max avant envoi forcé (même si parole continue)
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "models", "nllb-600M-onnx-int8")
 CT2_MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "models", "nllb-600M-ct2")
 CACHE_PATH = os.path.join(os.path.dirname(__file__), "..", "translation_cache.json")

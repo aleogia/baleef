@@ -5,4 +5,6 @@ __pycache__/
 .env
 models/nllb-600M-onnx-int8/*.onnx
 models/nllb-600M-onnx-int8/sentencepiece.bpe.model
+models/nllb-600M-ct2/
 audio_samples/*.wav
+translation_cache.json

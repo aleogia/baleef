@@ -3,15 +3,32 @@ import time
 
 import noisereduce as nr
 import numpy as np
+from resemblyzer import preprocess_wav
 
 import state
 from cache import translate
 from config import LANG_NAMES, NLLB_LANG_MAP, TARGET_LANG
-from models import _infer_lock, whisper_model
+from models import _infer_lock, speaker_encoder, whisper_model
+
+SPEAKER_THRESHOLD = 0.75
+
+
+def _identify_speaker(audio_16k: np.ndarray, side: str) -> int:
+    wav = preprocess_wav(audio_16k, source_sr=16000)
+    emb = speaker_encoder.embed_utterance(wav)
+    registry = state.speaker_registry.setdefault(side, [])
+    for i, stored in enumerate(registry):
+        if np.dot(emb, stored) > SPEAKER_THRESHOLD:
+            registry[i] = stored * 0.9 + emb * 0.1
+            registry[i] /= np.linalg.norm(registry[i])
+            return i
+    registry.append(emb / np.linalg.norm(emb))
+    return len(registry) - 1
 
 
 def _run_audio_inference(audio_16k: np.ndarray, side: str, fixed_src_lang: str | None) -> dict | None:
-    """Denoise → Whisper → NLLB → broadcast. Returns result dict, or None if no speech detected."""
+    """Denoise → speaker ID → Whisper → NLLB → broadcast. Returns result dict, or None if no speech detected."""
+    speaker_id = _identify_speaker(audio_16k, side)
     audio_16k = nr.reduce_noise(y=audio_16k, sr=16000, stationary=False)
     t0 = time.time()
     with _infer_lock:
@@ -20,7 +37,7 @@ def _run_audio_inference(audio_16k: np.ndarray, side: str, fixed_src_lang: str |
             language=fixed_src_lang,
             condition_on_previous_text=False,
         )
-        transcript = " ".join(s.text for s in segments).strip()
+        transcript = " ".join(s.text for s in segments).strip().rstrip(".… ")
     if not transcript:
         return None
 
@@ -36,6 +53,7 @@ def _run_audio_inference(audio_16k: np.ndarray, side: str, fixed_src_lang: str |
         "src_lang": LANG_NAMES.get(src_nllb, detected),
         "tgt_lang": LANG_NAMES.get(tgt_lang, tgt_lang),
         "ms": elapsed,
+        "speaker_id": speaker_id,
     }
     print(f"[side {side}] {elapsed}ms {'(cache)' if cached else ''} [{detected}→{tgt_lang}] {transcript!r} → {translation!r}")
     state.log_event("translation",

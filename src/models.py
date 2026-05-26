@@ -25,6 +25,10 @@ get_speech_timestamps, _, _, _, _ = vad_utils
 print("[init] Loading NLLB-200...")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
 nmt_model = ctranslate2.Translator(CT2_MODEL_DIR, device=device, compute_type="int8")
+
+print("[init] Loading resemblyzer speaker encoder...")
+from resemblyzer import VoiceEncoder
+speaker_encoder = VoiceEncoder(device="cpu")
 print("[init] Ready.\n")
 
 # VAD, Whisper, and NLLB share the same CUDA context — serialize all GPU calls

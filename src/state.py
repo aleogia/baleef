@@ -12,6 +12,7 @@ MAX_LOG = 200
 ws_clients: Dict[str, Set[WebSocket]] = {"A": set()}
 broadcast_queues: Dict[str, asyncio.Queue] = {}
 recent_messages: Dict[str, list] = {"A": []}
+speaker_registry: Dict[str, list] = {"A": []}  # side -> list of (embedding, speaker_id)
 event_loop: asyncio.AbstractEventLoop | None = None
 MAX_RECENT = 4
 

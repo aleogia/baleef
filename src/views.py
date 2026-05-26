@@ -155,6 +155,7 @@ HTML = """<!DOCTYPE html>
 
   <script>
     let MAX = 4;
+    const SPEAKER_COLORS = ['#60a5fa','#f472b6','#4ade80','#fb923c','#c084fc','#fbbf24','#2dd4bf','#f87171'];
 
     function applyConfig(cfg) {
       const r = document.documentElement.style;
@@ -198,8 +199,9 @@ HTML = """<!DOCTYPE html>
 
       const item = document.createElement('div');
       item.className = 'feed-item';
+      const color = SPEAKER_COLORS[(d.speaker_id || 0) % SPEAKER_COLORS.length];
       item.innerHTML =
-        '<div class="f-translated">' + esc(d.translated) + '</div>' +
+        '<div class="f-translated" style="color:' + color + '">' + esc(d.translated) + '</div>' +
         '<div class="f-original">' + esc(d.original) + '</div>' +
         '<div class="f-meta">' + esc(d.src_lang) + ' → ' + esc(d.tgt_lang) + ' · ' + d.ms + 'ms</div>';
 
@@ -771,6 +773,7 @@ def make_single_side_html(side: str) -> str:
   <div class="feed" id="feed{side}"></div>
   <script>
     let MAX = 4;
+    const SPEAKER_COLORS = ['#60a5fa','#f472b6','#4ade80','#fb923c','#c084fc','#fbbf24','#2dd4bf','#f87171'];
 
     function applyConfig(cfg) {{
       const r = document.documentElement.style;
@@ -809,8 +812,9 @@ def make_single_side_html(side: str) -> str:
       const feed = document.getElementById('feed{side}');
       const item = document.createElement('div');
       item.className = 'feed-item';
+      const color = SPEAKER_COLORS[(d.speaker_id || 0) % SPEAKER_COLORS.length];
       item.innerHTML =
-        '<div class="f-translated">' + esc(d.translated) + '</div>' +
+        '<div class="f-translated" style="color:' + color + '">' + esc(d.translated) + '</div>' +
         '<div class="f-original">' + esc(d.original) + '</div>' +
         '<div class="f-meta">' + esc(d.src_lang) + ' → ' + esc(d.tgt_lang) + ' · ' + d.ms + 'ms</div>';
       feed.appendChild(item);
